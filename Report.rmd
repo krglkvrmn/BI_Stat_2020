@@ -1,0 +1,484 @@
+---
+title: "Проект No1 “Насколько стара мидия”"
+date: "10/10/2020"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+<style>
+p.caption {
+  font-size: 0.9em;
+  font-style: italic;
+  color: grey;
+  margin-right: 10%;
+  margin-left: 10%;  
+  text-align: center;
+}
+</style>
+
+```{r setup, include=FALSE, cache=FALSE}
+
+if (!require(dplyr)) {install.packages(dplyr)}
+if (!require(ggplot2)) {install.packages(ggplot2)}
+if (!require(gridExtra)) {install.packages(gridExtra)}
+if (!require(grid)) {install.packages(grid)}
+```
+```{r include=FALSE}
+# Вспомогательные функции для более читаемого кода
+format.numbers <- function(num) {
+  return(sprintf("%.3g", num))
+}
+```
+
+# Подготовка данных
+Данные исследования представлены в виде 11 файлов в формате csv. Для более удобной обработки и анализа этих данных, они были объединены в единую таблицу с использованием пользовательской функции *concat_csv_data*.
+
+```{r echo=TRUE, message=FALSE}
+concat_csv_data <- function(path) {
+  setwd(path)
+  accumulated_data <- data.frame()
+  researcherId <- 0
+  for (filename in list.files()) {
+    if (endsWith(filename, ".csv")) {
+      input_df <- read.csv(filename)
+      input_df$Researcher <- researcherId
+      accumulated_data <- rbind(accumulated_data, input_df)
+      researcherId = researcherId + 1
+    }
+  }
+  return(accumulated_data)
+}
+```
+```{r message=FALSE, warning=FALSE, include=FALSE}
+path_to_data <- "ENTER PATH TO DATA HERE"
+mollusk_data <- concat_csv_data(path_to_data)
+```
+
+Данная функция принимает на вход абсолютный путь до папки, содержащей данные, и возвращает таблицу, включающую в себя наблюдения из всех файлов с заданным расширением.
+
+# Предварительный анализ данных 
+
+## Проверка данных на корректность
+
+В данных было приведено неудобное для использования название переменной, обозначающей пол моллюска, кроме того все загруженные данные были представлены строковым типом.
+Данные были преобразованы соответствующим образом, дополнительно были введены метки для уровней фактора переменной *Sex*.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+colnames(mollusk_data)[2] <- "Sex"
+mollusk_data <- mollusk_data %>%
+  transmute(across(everything(), as.numeric))
+mollusk_data$Sex <- factor(mollusk_data$Sex,
+                           levels = c(1, 2, 3),
+                           labels = c("Самец", "Самка", "Ювенильный"))
+```
+
+Нам до конца не известно, какой моделью можно описать наши данные, поэтому применение интерполяции для заполнения пропущенных значений может привести к ошибкам. Возможно было также заполнить пропущенные значения средними значениями, что тоже требует глубоких знаний об объекте изучения. Поэтому во избежание получения ложных результатов, наблюдения, содержащие пропущенные значения, были удалены.
+
+```{r echo=FALSE}
+mollusk_data <- na.omit(mollusk_data)
+```
+
+## Проверка данных на наличие выбросов
+
+Разброс значений количественных переменных, сгруппированных по переменной *Sex*, представлен на [графике](#fig1). 
+
+<a id="fig1"></a>
+```{r echo=FALSE, fig.height=7, fig.width=9, fig.cap="Рисунок 1. Распределение количественных переменых\nв зависимости от пола моллюска"}
+grid.arrange(ggplot(mollusk_data, aes(x = Sex, y = Rings)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Количество колец"),
+             ggplot(mollusk_data, aes(x = Sex, y = Length)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Длина"),
+             ggplot(mollusk_data, aes(x = Sex,y = Diameter)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Диаметр"),
+             ggplot(mollusk_data, aes(x = Sex,y = Height)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Высота"),
+             ggplot(mollusk_data, aes(x = Sex,y = Whole_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Общий вес"),
+             ggplot(mollusk_data, aes(x = Sex,y = Shucked_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Вес без раковины"),
+             ggplot(mollusk_data, aes(x = Sex,y = Viscera_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "Пол", y = "Вес внутренностей"),
+             ggplot(mollusk_data, aes(x = Sex,y = Shell_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw()  + labs(x = "Пол", y = "Вес раковины"), ncol=2)
+```
+
+Как видно из [графиков](#fig1), практически все переменные имеют значительное число выбросов. Для удаления выбросов была использована пользовательская функция *outliers.rm*. 
+
+```{r}
+outliers.rm <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = T)
+  q3 <- quantile(x, 0.75, na.rm = T)
+  iqr <- IQR(x, na.rm = T)
+  return(x>q1-1.5*iqr & x<q3+1.5*iqr)
+}
+```
+```{r echo=FALSE}
+mollusk_data <- mollusk_data %>%
+    filter(across(-c(Sex, Researcher), outliers.rm))
+```
+
+В данном случае было принято решение удалить все наблюдения с выбросами, однако стоит заметить, что можно было не удалять наблюдения с выбросами в переменной *Rings*, так как большее число старых особей в целом является нормальной закономерностью в природных популяциях.
+
+## Оценка взаимосвязей и формулировка гипотез
+
+[Корреляционная матрица](#fig2), приведённая ниже, позволяет оценить степень взаимосвязи между переменными.
+<a id="fig2"></a>
+```{r echo=FALSE, fig.height=10, fig.width=10, fig.cap="Рисунок 2. Корреляционная матрица, отражающая взаимосвязь количественных переменных."}
+initial_names <- colnames(mollusk_data)
+colnames(mollusk_data) <- c("Количество\nколец", "Пол", "Длина", "Диаметр", "Высота", "Общий\nвес", "Вес без\nраковины", "Вес\nвнутренностей", "Вес раковины", "Исследователь")
+pairs(select(mollusk_data, -c("Пол", "Исследователь")))
+colnames(mollusk_data) <- initial_names
+```
+
+А данные [графики](#fig3) позволяют сравнить средние значения для различных переменных в завиимости от пола.
+<a id="fig3"></a>
+```{r echo=FALSE, fig.height=12, fig.width=10, fig.cap="Рисунок 3. Распределение количественных переменых в зависимости от пола моллюска (данные с удалёнными выбросами)"}
+grid.arrange(ggplot(mollusk_data, aes(x = Sex, y = Rings)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Количество колец"),
+             ggplot(mollusk_data, aes(x = Sex, y = Length)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Длина"),
+             ggplot(mollusk_data, aes(x = Sex,y = Diameter)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Диаметр"),
+             ggplot(mollusk_data, aes(x = Sex,y = Height)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Высота"),
+             ggplot(mollusk_data, aes(x = Sex,y = Whole_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Общий вес"),
+             ggplot(mollusk_data, aes(x = Sex,y = Shucked_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Вес без раковины"),
+             ggplot(mollusk_data, aes(x = Sex,y = Viscera_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "Пол", y = "Вес внутренностей"),
+             ggplot(mollusk_data, aes(x = Sex,y = Shell_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw()  + labs(x = "Пол", y = "Вес раковины"), ncol=2)
+```
+
+Из [графиков](#fig2) можно заметить, что количественные переменные имеют положительную взаимосвязь, а размеры самок немного больше размеров самцов.
+Сформулируем следующие гипотезы:<br>
+  <ul>
+    <li>Линейные размеры моллюсков не различаются у особей взрослых и ювенильных особей.
+    <li>Линейные размеры моллюсков не различаются у женских и мужских особей.
+    <li>Существует линейная зависимость между размерами моллюска и его весом.
+  </ul>
+  
+
+# Углубленный анализ данных
+
+## Описание количественных переменных
+
+В приведённой ниже [таблице](#table1) отражены средние и стандартные отклонения длин моллюсков разных полов.
+<a id="table1"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Table caption test"}
+mollusk_data %>% 
+  group_by(Sex) %>% 
+  summarise(Mean = round(mean(Length), 3), Sd = round(sd(Length), 3), N = round(length(Length), 3))
+```
+
+Из данных выяснилось, что у **`r format.numbers(sum(mollusk_data$Height <= 0.165) / length(mollusk_data$Height) * 100)`** процентов моллюсков значение переменной *Height* не превышает **0.165**.
+
+Значение переменной *Length* равное **`r format.numbers(as.numeric(quantile(mollusk_data$Length, 0.92)))`**, больше, чем у 92% от всех наблюдений.
+
+Переменная *Length* была стандартизована следующим образом.
+
+```{r}
+Length_z_scores <- scale(mollusk_data$Length)
+```
+
+## Проверка статистических гипотез
+<a id="fig4"></a>
+```{r echo=FALSE, fig.cap="Рисунок 3. Распределение диаметров моллюсков с 5 и 15 кольцами"}
+ggplot(subset(mollusk_data, Rings %in% c(5, 15)), aes(x = factor(Rings), y = Diameter)) +
+         geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3) + theme_linedraw() +
+         labs(x = "Количество колец", y = "Диаметр")
+```
+
+Из [графика](#fig4) видно, что моллюски с 15 кольцами имеют больший диаметр, чем моллюски с 5 кольцами.
+Перед проверкой гипотезы о равенстве средних значений для данных выборок необходимо определить подчиняются ли распределения нормальному закону.
+
+Здесь и далее в статистических тестах будет использоваться Р-уровень значимости равный 0.95.
+
+В [таблице](#table2) приведены результаты проверки распределения на нормальность при помощи критерия Шапиро-Уилка.
+<a id="table2"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mollusk_data %>% filter(Rings %in% c(15, 5)) %>% 
+  group_by(Rings) %>%
+  summarise(W_statistic = round(shapiro.test(Diameter)$statistic, 3), P_value = round(shapiro.test(Diameter)$p, 3), Mean = round(mean(Diameter), 2), Sd = round(sd(Diameter), 2),  N = length(Diameter))
+```
+
+По данным теста распределение диаметров у моллюсков с 15 кольцами значимо не отличается от нормального, а у моллюсков с 5 кольцами значимо отличается от нормального. Следовательно для сравнения средних у данных групп следует использовать непараметрический критерий Уилкоксона. Для этого сформулируем альтернативную гипотезу: **Средний диаметр у моллюсков с 5 кольцами отличается от среднего диаметра у моллюсков с 15 кольцами**.
+
+Результаты приведены в [таблице](#table3):
+<a id="table3"></a>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+r15_ss <- as.numeric(subset(mollusk_data, Rings == 15)$Diameter)
+r5_ss <- as.numeric(subset(mollusk_data, Rings == 5)$Diameter)
+tr <- wilcox.test(r5_ss, r15_ss)
+```
+```{r echo=FALSE}
+tibble(W_statistic = tr$statistic, P_value = format.numbers(tr$p.value), Altern.hypotesis = tr$alternative,
+       Mean_5 = round(mean(r5_ss), 3), Mean_15 = round(mean(r15_ss), 3),
+       Sd_5 = round(sd(r5_ss), 3), Sd_15 = round(sd(r15_ss), 3),
+       N_5 = length(r5_ss), N_15 = length(r15_ss))
+```
+
+P-значение равно **`r format.numbers(tr$p.value)`**, что позволяет отвергнуть нулевую гипотезу о равенстве средних.
+
+
+Для изучения взаимосвязи переменных *Diameter* и *Whole_weight* необходимо сперва [визуализировать данные](#fig5).
+<a id="fig5"></a>
+```{r echo=FALSE, fig.height=6, fig.width=6, message=FALSE, warning=FALSE, fig.cap="Рисунок 5. Взаимосвязь веса и диаметра моллюска"}
+ggplot(mollusk_data, aes(x = Diameter, y = Whole_weight)) +
+  ylim(-0.1, 3) +
+  geom_point(aes(col = Sex)) +
+  geom_smooth(method = "lm", col = "#666666") +
+  theme_linedraw() +
+  labs(x = "Диаметр", y = "Общий вес", col = "Пол")
+```
+
+Из [графика](#fig5) видно, что с увеличением диаметра моллюсков увеличивается и их вес. При этом при значениях диаметра больше **0.35** более выражена возможная линейная взаимосвязь переменных.
+
+
+Перед установлением факта наличия корреляции проверим выборки на нормальность.
+Результаты теста Шапиро-Уилка приведены в [таблице](#table4).
+<a id="table4"></a>
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+dt <- shapiro.test(mollusk_data$Diameter)
+wt <- shapiro.test(mollusk_data$Whole_weight)
+tibble(Variable = c("Diameter", "Whole_weight"),
+       W_statistic = round(c(dt$statistic, wt$statistic), 3),
+       P_value = c(format.numbers(dt$p), format.numbers(wt$p)),
+       Mean = round(c(mean(mollusk_data$Diameter), mean(mollusk_data$Whole_weight)), 3),
+       Sd = round(c(sd(mollusk_data$Diameter), sd(mollusk_data$Whole_weight)), 3),
+       N = round(c(length(mollusk_data$Diameter), length(mollusk_data$Whole_weight)), 3))
+```
+
+Видим, что распределения веса и диаметра моллюсков значимо отличаются от нормального.
+Это означает, что для расчёта корреляции необходимо воспользоваться критерием Спирмена.
+
+Результаты приведены в [таблице](#table5):
+<a id="table5"></a>
+```{r message=FALSE, warning=FALSE, include=FALSE}
+ct <- cor.test(mollusk_data$Diameter, mollusk_data$Whole_weight, method = "spearman")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+tibble(S_statistic = ct$statistic, P_value = ct$p.value, Rho = ct$estimate, Method = ct$method)
+```
+
+Р-значение намного меньше 0.05, значит гипотеза о равенстве нулю коэффициента коррелляции ложна. Значение **r = `r format.numbers(ct$estimate)`** позволяет сделать вывод о сильной взаимосвязи данных переменных.
+
+
+# Дополнительная часть
+
+## Человеческий фактор
+
+### Различия в замерах
+
+В этой части будут рассмотрены различия в измерениях, проводимых различными людьми. Для этого изначально были также загружены данные об исследователях, проводивших замеры. Исследователи были анонимизированы, в данных они представлены порядковыми номерами.
+
+Для начала рассмотрим [распределение](#fig6) количественных переменных в зависимости от исследователя, проводившего замеры.
+<a id="fig6"></a>
+```{r echo=FALSE, fig.height=10, fig.width=12, fig.cap="Рисунок 6. Распределение количественных переменых в зависимости от исследователя, проводившего замеры"}
+grid.arrange(ggplot(mollusk_data, aes(x = factor(Researcher), y = Rings)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw()  + labs(x = "", y = "Количество колец"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Length)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Длина"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Diameter)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Диаметр"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Height)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Высота"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Whole_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Общий вес"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Shucked_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "", y = "Вес без раковины"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Viscera_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "Исследователь", y = "Вес внутренностей"),
+             ggplot(mollusk_data, aes(x = factor(Researcher), y = Shell_weight)) + geom_boxplot(width = 0.5, fill = "#88DDDB", lwd = 0.3, outlier.size = 0.5) + theme_linedraw() + labs(x = "Исследователь", y = "Вес раковины"),
+             ncol=2)
+```
+
+По [графикам](#fig7) видно, что распределения величин количественных переменных среди исследователей очень схожи. Однако можно заметить, что медианы распределений у исследователя №3 меньше, чем у других, а медианы распределений исследователя №9 больше.<br>
+Выдвинем альтернативную гипотезу о том, что **средние величины, измеренные исследователем №3 отличаются от средних величин измеренных исследователем №9**. Проверим эту гипотезу при помощи t-теста для различных переменных.
+
+Для начала проверим распределения на нормальность.
+В приведённой ниже [таблице](#table6) представлены результаты теста на нормальность Шапиро-Уилка.<br>
+P-значения приведены в ячейках таблицы для соответствующих исследователей и переменных.
+<a id="table6"></a>
+```{r, echo=FALSE, rows.print=11}
+mollusk_data %>%
+  select(-Sex, -Rings) %>% 
+  group_by(Researcher) %>%
+  summarise_all(~format.numbers(shapiro.test(.)$p))
+```
+
+Из [таблицы](#table6) видно, что подавляющая часть распределений не являются нормальными, а значит для проверки гипотез воспользуемся непараметрическим критерием Уилкоксона.
+Результаты тестов представлены в [таблице](#table7).<br>
+Количество наблюдений исследователя №3 составило **`r length(subset(mollusk_data, Researcher==3)$Researcher)`**<br>
+Количество наблюдений исследователя №9 составило **`r length(subset(mollusk_data, Researcher==9)$Researcher)`**
+<a id="table7"></a>
+```{r, echo=FALSE}
+df <- tibble(.rows = 8)
+for (variable in colnames(select(mollusk_data, -c(Sex, Researcher)))) {
+  res3_ss <- subset(mollusk_data, Researcher == 3)[,variable]
+  res9_ss <- subset(mollusk_data, Researcher == 9)[,variable]
+  test_res <- wilcox.test(res3_ss, res9_ss)
+  temp <- tibble(Variable = variable, W_statistic = round(test_res$statistic), P_value = format.numbers(test_res$p.value),
+                 Mean_3 = round(mean(res3_ss), 3), Mean_9 = round(mean(res9_ss), 3),
+                 Sd_3 = round(sd(res3_ss), 3), Sd_9 = round(sd(res9_ss), 3))
+  df <- rbind(df, temp)
+}
+df
+```
+
+Из результатов видно, что нулевую гипотезу о равенстве средних для замеров у исследователей №3 и №9 можно отклонить для высоты моллюска, общего веса, веса внутренностей и веса раковины. Возможно, исследователь №3 предпочитал выбирать более плоских моллюсков, в то время как исследователь №9 выбирал "более сферических".
+
+### Кто делает больше выбросов?
+
+Интересно также посмотреть на зависимость количества выбросов от исследователя.
+На нижележащей [таблице](#table8) представлены количества выбросов среди замеров у каждого из исследователей, а также общее количество замеров для каждого исследователя.
+<a id="table8"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE, rows.print=11}
+mollusk_data_o <- concat_csv_data(path_to_data)
+colnames(mollusk_data_o)[2] <- "Sex"
+mollusk_data_o <- mollusk_data_o %>%
+  transmute(across(everything(), as.numeric))
+mollusk_data_o$Sex <- factor(mollusk_data_o$Sex,
+                           levels = c(1, 2, 3),
+                           labels = c("Male", "Female", "Uvenil"))
+mollusk_data_o <- na.omit(mollusk_data_o)
+
+outliers.select <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = T)
+  q3 <- quantile(x, 0.75, na.rm = T)
+  iqr <- IQR(x, na.rm = T)
+  return(x<q1-1.5*iqr | x>q3+1.5*iqr)
+}
+
+
+
+res_outliers <- mollusk_data_o %>% 
+  group_by(Researcher) %>% 
+  select(-Sex) %>% 
+  summarise_all(~sum(outliers.select(.))) %>% 
+  summarise(Researcher = Researcher, outliers = rowSums(.))
+
+res_obs_num <- mollusk_data_o %>% 
+  group_by(Researcher) %>% 
+  summarise(N = n())
+
+outliers_df <- cbind(res_outliers, res_obs_num[,"N"])
+outliers_df
+```
+
+Однако, такие результаты трудно интерпретировать. Для большей наглядности, нормируем количество выбросов на количество наблюдений.
+<a id="table9"></a>
+```{r echo=FALSE, fig.height=4, fig.width=4, paged.print=TRUE, rows.print=11, out.width=4}
+df <- tibble(outliers_df$Researcher, round(outliers_df$outliers/outliers_df$N, 4)*100)
+colnames(df) <- c("Researcher", "% Outliers")
+df
+```
+
+По данным результатам трудно сделать какие-либо выводы, однако можно заметить, что иследователь №3 допускал выбросы реже остальных, а исследователь №4 чаще.
+
+## Возрастной состав популяции
+
+В ходе анализа данных появился закономерный вопрос. Моллюски какого пола преобладают в разных возрастных группах?
+
+Более-менее очевидно, что среди молодых моллюсков будут преобладать ювенильные особи, однако как изменится распределение среди моллюсков постарше?
+
+Для ответа на данный вопрос построим [график](#fig7), отражающий число моллюсков каждого пола в каждой возрастной группе.
+<a id="fig7"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Рисунок 7. Возрастной и половой состав популяции моллюсков"}
+
+ggplot(mollusk_data, aes(x = factor(Rings), fill = Sex))+
+  geom_bar(position = position_dodge(), col = "#000000", lwd = 0.2) +
+  theme_linedraw()  + labs(x = "Количество колец", y = "Количество особей", fill = "Пол")
+
+```
+
+На данном [графике](#fig7) можно заметить несколько интересных закономерностей.
+
+Во-первых можно заметить, что соотношение количества особей разных полов действительно меняется в зависимости от возраста. Среди младших особей преобладают ювенильные, среди более старших становится больше мужских особей, далее с течением времени резко увеличивается количество женских особей.
+
+Во-вторых число самцов с возрастом резко снижается, что может свидетельствовать о их меньшей средней продолжительности жизни.
+
+Назовём "старыми" особей с количеством колец больше 10, а "молодыми" остальных.
+
+Сформулируем следующие альтернативные гипотезы: 
+<ul>
+  <li>**Средний возраст отличается от среднего возраста самцов**
+  <li>**Средний возраст старых самцов не равен среднему возрасту старых самок.**
+</ul>
+
+Сначала проверим распределения на нормальность.
+Результаты теста Шапиро-Уилка представлены в [таблице](#table10).
+<a id="table10"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+test_res_all <- mollusk_data %>% 
+  filter(Sex %in% c("Самка", "Самец")) %>% 
+  group_by(Sex) %>% 
+  summarise(Age = "Все", W_statistic=shapiro.test(Rings)$statistic,
+            P_value=shapiro.test(Rings)$p, Mean = round(mean(Rings), 3), Sd = round(sd(Rings), 3), N = n())
+
+test_res_old <- mollusk_data %>% 
+  filter(Sex %in% c("Самка", "Самец") & Rings>10) %>%
+  group_by(Sex) %>% 
+  summarise(Age = "Старые", W_statistic=shapiro.test(Rings)$statistic,
+            P_value=shapiro.test(Rings)$p, Mean = round(mean(Rings), 3), Sd = round(sd(Rings), 3), N = n())
+rbind(test_res_all, test_res_old)
+```
+
+Все распределения значимо отличаются от нормального. Для проверки гипотез воспользуемся непараметрическим критерием Уилкоксона.
+
+Результаты t-теста представлены в [таблице](#table11).
+<a id="table11"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+all_test <- wilcox.test(filter(mollusk_data, Sex=="Самка")$Rings,
+            filter(mollusk_data, Sex=="Самец")$Rings)
+old_test <- wilcox.test(filter(mollusk_data, Sex=="Самка", Rings>10)$Rings,
+            filter(mollusk_data, Sex=="Самец", Rings>10)$Rings)
+
+
+tibble(Age = c("All", "Old"),
+       W_statistic = c(all_test$statistic, old_test$statistic),
+       P_value = c(round(all_test$p.value, 4), round(old_test$p.value, 4)),
+       Altern.hypotesis = c(all_test$alternative, old_test$alternative),
+       N = c( length(filter(mollusk_data, Sex!="Ювенильный")$Rings),
+              length((filter(mollusk_data, Sex!="Ювенильный", Rings>10)$Rings))))
+
+```
+
+Итак, средний возраст самцов значимо отличается от среднего возраста самок, но возрасты старых особей значимо не различаются. Это говорит нам о том, что различия обусловлены молодыми особями. Это также было заметно из последнего [графика](#fig7): молодых самцов больше, чем молодых самок. Эта гипотеза была подтверждена в ходе одностороннего t-теста (данные не приведены).
+
+Получается, что с мужские особи в популяции в целом начинают появлятся раньше, чем женские. Это может быть обусловленно биологическими особенностями детерминации пола у данного вида моллюсков, т.е. развитие по мужскому пути, по-видимому, происходит быстрее.
+
+## Половой диморфизм
+
+Посмотрим снова на [графики](#fig3) зависиимости размеров и веса моллюсков от пола. Заметим, что значения количественных переменных, отвечающих за размеры моллюска и его вес принимают более большие значения для женских особей, чем для мужских.
+
+Эти различия более наглядны на графике зависимости от возраста. Построим подобный [график](#fig8) на примере переменной *Whole_weight*.
+
+<a id="fig8"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Рисунок 8. Общий вес моллюсков в зависимости от возраста и пола"}
+ggplot(mollusk_data, aes(x = factor(Rings), y = Whole_weight, fill = Sex)) +
+  geom_boxplot() +
+  theme_linedraw()  + labs(x = "Количество колец", y = "Общий вес", fill = "Пол")
+```
+
+
+Сформулируем следующую гипотезу: **Средние значения количественных переменных для женских особей отличаются от средних значений количественных переменных для мужских особей** и проверим эту гипотезу при помощи t-теста для различных переменных размеров и веса.
+
+Проверим распределения на нормальность при помощи критерия Шапиро-Уилка.
+
+Результаты теста приведены в [таблице](#table12).
+<a id="table12"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mollusk_data %>% 
+  filter(Sex!="Ювенильный") %>% 
+  group_by(Sex) %>% 
+  summarise(across(-c("Researcher", "Rings"), ~format.numbers(shapiro.test(.)$p)))
+```
+
+Как видно, все распределения значимо оличаются от нормального, поэтому для проверки гипотезы снова воспользуемся критерием Уилкоксона. 
+
+Результаты теста представлены в [таблице](#table13).
+<a id="table13"></a>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+df <- tibble(.rows=9)
+for (variable in colnames(select(mollusk_data, -c(Sex, Researcher, Rings)))) {
+  male_ss <- subset(mollusk_data, Sex == "Самец")[,variable]
+  female_ss <- subset(mollusk_data, Sex == "Самка")[,variable]
+   
+  test_res <- wilcox.test(male_ss, female_ss)
+  temp <- tibble(Variable=variable, W_statistic=test_res$statistic, P_value=format.numbers(test_res$p.value),
+                   Mean_Male=round(mean(male_ss), 3), Mean_Female=round(mean(female_ss), 3),
+                   Sd_Male=round(sd(male_ss), 3), Sd_Female=round(sd(female_ss), 3),
+                   N_Male=length(male_ss), N_Female=length(female_ss))
+  df <- rbind(df, temp)
+}
+df
+```
+
+Мы можем отвергнуть нулевую гипотезу о равенстве средних значений размеров и веса для особей мужского и женского пола для всех переменных. Это означает, что размеры и вес женских особей значимо отличаются от размеров и веса мужских особей. Возможно, что для данного вида моллюсков типичен половой диморфизм, что означает различие в анатомическом строении мужских и женских особей. В данном случае самки в среднем немного крупнее самцов.
+
+
