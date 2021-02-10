@@ -1,0 +1,296 @@
+---
+title: "Дополнительный проект (ANOVA)"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+if (!require(readxl)) {install.packages("readxl")}
+if (!require(dplyr)) {install.packages("dplyr")}
+if (!require(ggplot2)) {install.packages("ggplot2")}
+if (!require(car)) {install.packages("car")}
+if (!require(multcomp)) {install.packages("multcomp")}
+if (!require(gridExtra)) {install.packages("gridExtra")}
+if (!require(scales)) {install.packages("scales")}
+if (!require(grid)) {install.packages("grid")}
+```
+
+# Описание данных
+
+Данные представляют собой наблюдения, собранные 20 различными врачами. Они включают в себя следующие переменные:
+
+**X** --- порядковый номер пациента
+
+**id** --- уникальный идентификатор пациента
+
+**drug_type** --- тип принимаемого препарата
+
+**is_relapse** --- наличие рецидива
+
+**age** --- возраст пациента
+
+**gender** --- пол пациента
+
+**days_in_hospital** --- кол-во дней проведённых в больничном стационаре
+
+# Подготовка данных
+
+## Чтение данных
+
+Для чтения и объединения данных была создана пользовательская функция, принимающая в качестве аргументов путь до папки, 
+содержащей файлы с данными, формат записи данных и разделитель колонок (в случае текстового формата).
+
+```{r}
+concatenate_data <- function(path, format, delim="") {
+    format_parser_map <- c(read.csv, read.csv2, read.delim, read_xls, read_xlsx)
+    names(format_parser_map) <- c("csv-,", "csv-;", "tsv-", "xls-", "xlsx-")
+    data_format <- paste(format, delim, sep="-")
+    accumulated_data <- tibble()
+    for (filename in list.files(path = path)) {
+        new_data <- format_parser_map[[data_format]](paste(path, filename, sep="/"))
+        accumulated_data = rbind(accumulated_data, new_data)
+        
+    }
+    return(accumulated_data)
+}
+```
+
+```{r echo=FALSE}
+hospital_data <- concatenate_data("/home/roman/BI/statistics/BI_Stat_2020/Data", format="csv", delim=",")
+```
+
+
+## Коррекция и фильтрация данных
+
+Для удобной работы с данными нужно привести их в соответствие с концепцией tidy-data.
+
+Изначальная структура данных выглядит следующим образом:
+
+```{r echo=FALSE}
+str(hospital_data)
+```
+
+Для быстрой визуализации ошибок записи данных выведем уникальные значения каждой переменной.
+
+```{r echo=FALSE}
+sapply(hospital_data, unique)
+```
+
+Заметим, что переменные *X* и *id* несут одну и ту же информацию - уникальный идентификатор пациента, а значит можно удалить одну из них.
+
+В ряде наблюдений присутствует опечатка "malle" вместо "male", данные ошибки можно исправить.
+
+В двух наблюдениях число 31 записано словами, данные значения можно заменить на числовые.
+
+В двух наблюдениях наблюдаются невозможные значения переменной *age*: **350** и **220**. Вероятно, ошибка вызвана записью лишней цифры, однако однозначно восстановить число не представляется возможным,
+поэтому во избежание ложных результатов эти наблюдения можно убрать.
+
+Переменные *gender*, *age*, *is_relapse* и *drug_type* представлены строковым типом, для дальнейшей работы нужно сделать их факторными.
+
+Некоторые наблюдения имеют пропущенные значения переменной *is_relapse*, можно предположить, что осутствие данных о рецидиве свидетельствует о его фактическом отсутствии, однако
+пропущенных значений не слишком много и наблюдения, содержащие их, могут быть опущены.
+
+```{r echo=FALSE}
+hospital_data <- dplyr::select(hospital_data, -X)
+hospital_data$gender <- replace(hospital_data$gender, hospital_data$gender == "malle", "male")
+hospital_data$age <- replace(hospital_data$age, hospital_data$age == "thirty-one", "31")
+hospital_data <- filter(hospital_data, !(age %in% c(350, 220)))
+
+hospital_data$gender <-factor(hospital_data$gender)
+hospital_data$age <-factor(hospital_data$age)
+hospital_data$is_relapse <-factor(hospital_data$is_relapse)
+hospital_data$drug_type <- factor(hospital_data$drug_type)
+hospital_data <- na.omit(hospital_data)
+```
+
+После данных преобразований структура данных выглядит следующим образом:
+
+```{r echo=FALSE}
+str(hospital_data)
+```
+
+С ними уже можно работать дальше.
+
+# Предварительный анализ данных
+
+```{r include=FALSE, echo=FALSE}
+translated_data <- hospital_data
+translated_data$gender <- factor(translated_data$gender, labels = c("Женщины", "Мужчины"))
+translated_data$drug_type <- factor(translated_data$drug_type, labels = c("Новый тип 1", "Новый тип 2", "Старый тип", "Плацебо"))
+translated_data$is_relapse <- factor(translated_data$is_relapse, labels = c("Нет", "Да"))
+```
+
+Мы имеем всего одну непрерывную переменную в данных. Визуализируем её распределение для различных групп.
+
+```{r fig.height=10, fig.width=10, echo=FALSE}
+# Цветовая палитра для дальтоников
+cbbPalette <- rev(c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"))
+
+gender_dist <- ggplot(translated_data, aes(x = gender, y = days_in_hospital)) + geom_boxplot(fill="#D55E00") +
+  labs(x = "Пол", y = "")
+age_dist <- ggplot(translated_data, aes(x = age, y = days_in_hospital)) + geom_boxplot(fill="#CC79A7") +
+  labs(x = "Возраст", y = "")
+drug_dist <- ggplot(translated_data, aes(x = drug_type, y = days_in_hospital)) + geom_boxplot(fill="#0072B2") +
+  labs(x = "Тип препарата", y = "")
+relapse_dist <- ggplot(translated_data, aes(x = is_relapse, y = days_in_hospital)) + geom_boxplot(fill="#F0E442") +
+  labs(x = "Рецидив", y = "")
+grid.arrange(gender_dist, age_dist, drug_dist, relapse_dist, ncol=2, top = textGrob("Распределение времени госпитализации\nдля различных групп пациентов", gp=gpar(fontsize=16,font=2)), left = textGrob("Дней в больнице", rot = 90, gp=gpar(fontsize=14,font=1)))
+
+gender_dist <- ggplot(translated_data, aes(x = doctor, y = days_in_hospital)) + geom_boxplot(fill="#D55E00") +
+  labs(x = "Пол", y = "")
+```
+
+Заметим, что небольшие различия во времени госпитализации различаются среди пациентов, принимавших различные препараты, а также в группах по рецидиву.
+
+Проверим распределение переменной *days_in_hospital* на нормальность.
+
+```{r echo=FALSE}
+q <- qqPlot(hospital_data$days_in_hospital, distribution = "norm", xlab = "Теоретические квантили", ylab = "Эмпирические квантили", main = "Квантиль-квантильный график переменной days_in_hospital")
+```
+
+Квантиль-квантильный график выглядит не лучшим образом.
+
+Проверим гипотезу о нормальном распределении переменной.
+
+```{r echo=FALSE}
+test <- shapiro.test(hospital_data$days_in_hospital)
+```
+
+P-значение равно **`r test$p`**, а значит распределение переменной *days_in_hospital* значимо не отличается от нормального.
+
+Поскольку дисперсионный анализ лучше работает с группами одинакового размера, проверим численность групп в наших данных.
+
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+translated_data %>% group_by(gender, drug_type) %>% summarise(n = n())
+translated_data %>% group_by(gender) %>% summarise(n = n())
+translated_data %>% group_by(drug_type) %>% summarise(n = n())
+```
+
+Как видно из таблиц, группы имеют почти одинаковый размер.
+
+# Дисперсионный анализ
+
+## Построение модели
+
+Сперва исследуем влияние факторов пола и типа препарата, а также их взаимодействия на время госпитализации при помощи двухфакторного дисперсионного анализа со взаимодействием.
+
+```{r echo=FALSE}
+model <- lm(days_in_hospital ~ gender * drug_type, data = hospital_data)
+anova_model <- Anova(model)
+head(anova_model)
+```
+
+## Условия применимости
+
+Построим график расстояний Кука для оценки наличия влиятельных наблюдений.
+
+```{r echo=FALSE}
+mod_diag <- fortify(model)
+ggplot(mod_diag, aes(x=1:nrow(mod_diag), y = .cooksd)) +
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = 2, color = "red") +
+  labs(x = "№ Наблюдения", y = "Расстояние Кука") +  ggtitle("График расстояний Кука") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+Из графика видно, что влиятельные наблюдения в данных отсутствуют.
+
+```{r echo=FALSE, message=FALSE}
+ggplot(data = mod_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  labs(x = "Предсказанные значения", y = "Стандартное отклонение остатков", title = "График распределения остатков модели") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+Из графика видно отсутствие паттернов в остатках, однако некоторые из них сильно отклоняются от 0.
+
+```{r echo=FALSE, }
+q <- qqPlot(model, distribution = "norm", xlab = "Теоретические квантили", ylab = "Эмпирические квантили", main = "Квантиль-квантильный график остатков модели")
+```
+```{r echo=FALSE}
+shapiro.test(mod_diag$.resid)
+```
+
+
+Из квантиль-квантильного графика можно сделать вывод, что распределение близко к нормальному, но тест Шапиро-Уилка отвергает данную гипотезу.
+
+## Интерпретация результатов
+
+В итоге мы имеем следующие результаты дисперсионного анализа.
+
+```{r echo=FALSE}
+head(anova_model)
+```
+
+Таким образом **cочетание типа принимаемого препарата и пола пациента значимо влияет на время госпитализации (F =`r anova_model[[3]][3]` , p_value = `r anova_model[[4]][3]`, df_1 = `r anova_model[[2]][3]`, df_2 = `r anova_model[[2]][4]`)**.
+
+Однако данные результаты не позволяют нам узнать сочетание каких уровней факторов влияет на время госпитализации. Для того,
+чтобы это выяснить необходимо провести пост-хок тесты.
+
+Для этого подберём линейную модель без свободного члена, где в качестве предиктора выступает фактор взаимодействия.
+
+Сначала создадим данный фактор, сгруппировав имеющиеся.
+
+```{r}
+hospital_data$Combined_features <- factor(paste(hospital_data$drug_type, hospital_data$gender, sep="-"))
+```
+
+Подберём модель:
+
+```{r}
+ph_model <- lm(days_in_hospital ~ Combined_features - 1, data = hospital_data)
+```
+
+Проведём пост-хок тест Тьюки на основе данной модели.
+
+```{r warning=FALSE}
+post_hoch <- glht(ph_model, linfct = mcp(Combined_features = "Tukey"))
+summary(post_hoch)
+```
+
+Можно проинтерпретировать результаты следующим образом:
+
+**Препарат 2 типа замедляет лечение и мужчин, но ускоряет лечение у женщин. Препарат старого типа замедляет лечение у женщин, но не оказывает значимого эффекта у мужчин**
+
+Данные результаты также могут быть проиллюстрированы следующим графиком.
+
+```{r echo=FALSE}
+tr_model <- lm(days_in_hospital ~ gender * drug_type, data = translated_data)
+plot_data <- expand.grid(gender = levels(translated_data$gender),
+                      drug_type = levels(translated_data$drug_type))
+plot_data <- data.frame(
+              plot_data,
+              predict(tr_model, newdata = plot_data, interval = 'confidence'))
+
+pos <- position_dodge(width = 0.2)
+gg_linep <- ggplot(data = plot_data, aes(x = gender, y = fit, ymin = lwr, ymax = upr, colour = drug_type)) +
+  geom_point(position = pos) +
+  geom_errorbar(position = pos, width = 0.2) +
+  labs(x = "Пол", y = "Ождидаемое время госпитализации", colour = "Тип препарата", title = "Результаты пост-хок теста Тьюки") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.title = element_text(size=14, vjust = 0.5)) +
+  scale_colour_manual(values = cbbPalette)
+  
+gg_linep
+```
+
+
+
+
+
