@@ -1,0 +1,240 @@
+---
+title: 'Survival analysis'
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+if (!require(survival)) {install.packages("survival")}
+if (!require(ggplot2)) {install.packages("ggplot2")}
+if (!require(dplyr)) {install.packages("dplyr")}
+if (!require(gridExtra)) {install.packages("gridExtra")}
+if (!require(survminer)) {install.packages("survminer")}
+if (!require(coin)) {install.packages("coin")}
+if (!require(ggfortify)) {install.packages("ggfortify")}
+```
+
+# Data set description
+
+Data set depicts survival in a randomised trial comparing two treatments for ovarian cancer.
+
+Following variables are present:
+
+\      **futime**:	survival or censoring time
+
+\      **fustat**:	censoring status
+
+\      **age**:  in years
+
+\      **resid.ds**:   residual disease present (1=no,2=yes)
+
+\      **rx**:	treatment group
+
+\      **ecog.ps**:  [ECOG performance status](https://ecog-acrin.org/resources/ecog-performance-status)
+
+# Exploratory data analysis
+
+Data has following structure:
+
+```{r comment="", echo=FALSE}
+str(ovarian)
+```
+
+Variables **fustat**, **resid.ds**, **rx** and **ecog.ps** can be converted to factors.
+
+```{r echo=FALSE, include=FALSE}
+ova <- ovarian
+ova$rx <- factor(ova$rx)
+ova$resid.ds <- factor(ova$resid.ds)
+ova$ecog.ps <- factor(ova$ecog.ps)
+ova$age_groups <- factor(ifelse((ova$age < 57), "Younger than 57", "Older than 57"))
+```
+
+Data has only **26** observations.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(ova, aes(x = age, y = futime, col=factor(rx))) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    labs(x = "Age", y = "Survival time") +
+    scale_color_discrete(name = "Treatment group") +
+    theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+cortest <- cor.test(ova$futime, ova$age)
+```
+
+Variables **age** and **futime** are negatively correlated (**r = `r cortest$estimate`, p-value = `r sprintf("%.3g", cortest$p.value)`**)
+
+**`r sum(ova$fustat == 1)`** of **`r length(ova$fustat)`** observations are censored.
+
+Groups formed by categorical variables are badly balanced, probably due to lack of observations.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ova %>% group_by(fustat, resid.ds, rx, ecog.ps) %>% summarise(n=n())
+```
+
+# Survival analysis
+
+## Kaplan–Meier curves
+
+First, we need to build model using **fustat** and **futime** variables. This will describe changes in survival chances depending on time.
+
+```{r echo=FALSE, comment=""}
+cb_palete <- rev(c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"))
+km_fit <- survfit(Surv(futime, fustat) ~ 1, data=ova)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, surv.colour = cb_palete[3], xlab = "Time", ylab = "Survival rate")
+```
+
+We can see very large CIs. Again, this may be caused by insufficiency of observations. However this model yields a little information, we can analyze survival rate depending on other factors.
+
+<hr>
+
+### Survival rate depending on ECOG status
+
+```{r echo=FALSE, comment=""}
+km_fit <- survfit(Surv(futime, fustat) ~ ecog.ps, data=ova)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+logrank_test(Surv(futime, fustat) ~ ecog.ps, data=ova)
+pairwise_survdiff(Surv(futime, fustat) ~ ecog.ps, data=ova, p.adjust.method = "BH")
+```
+Survival rate does not significantly differ between ECOG status 1 and 2.
+
+<hr>
+
+### Survival rate depending on treatment
+
+```{r echo=FALSE, comment=""}
+km_fit <- survfit(Surv(futime, fustat) ~ rx, data=ova)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+logrank_test(Surv(futime, fustat) ~ rx, data=ova)
+```
+
+Survival rate does not significantly differ between different treatment types.
+
+<hr>
+
+### Survival rate depending on residual disease presence
+
+```{r echo=FALSE, comment=""}
+km_fit <- survfit(Surv(futime, fustat) ~ resid.ds, data=ova)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+logrank_test(Surv(futime, fustat) ~ resid.ds, data=ova)
+```
+Survival rate does not significantly differ depending on residual disease presence.
+
+<hr>
+
+### Survival rate depending on age group
+
+```{r echo=FALSE, comment=""}
+km_fit <- survfit(Surv(futime, fustat) ~ age_groups, data=ova)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+logrank_test(Surv(futime, fustat) ~ age_groups, data=ova)
+```
+
+Survival rate does not significantly differ depending on age groups.
+
+<hr>
+
+### Survival rate depending on age group and treatment
+
+```{r echo=FALSE, comment=""}
+ova$agerx <- factor(paste(ova$age_groups, ova$rx, sep="_"))
+km_fit <- survfit(Surv(futime, fustat) ~ agerx, data=ova)
+# summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+pairwise_survdiff(Surv(futime, fustat) ~ agerx, data=ova, p.adjust.method = "bonferroni", rho=1)
+```
+
+Here **peto & peto logrank test** was made and bonferroni adjustment was applied, because now we have 4 groups to compare. We can notice that type 1 treated people in different age groups significantly differ in survival rates.
+
+<hr>
+
+### Survival rate depending on residual disease presence and treatment
+
+```{r echo=FALSE, comment=""}
+ova$residrx <- factor(paste(ova$resid.ds, ova$rx, sep="_"))
+km_fit <- survfit(Surv(futime, fustat) ~ residrx, data=ova)
+# summary(km_fit, times = c(1,30,60,90*(1:10)))
+autoplot(km_fit, xlab = "Time", ylab = "Survival rate")
+pairwise_survdiff(Surv(futime, fustat) ~ residrx, data=ova, p.adjust.method = "bonferroni", rho=1)
+```
+
+According to logrank test with bonferroni adjustment these groups do not have any significant differences in survival rate.
+
+## Analysis of hazard factors
+
+### Proportional hazards regression model
+
+To estimate hazard factors Cox model can be built.
+
+```{r echo=FALSE, comment=""}
+cox <- coxph(Surv(futime, fustat) ~ resid.ds + ecog.ps + rx + age_groups, data = ova)
+summary(cox)
+```
+
+<a id="COX2"></a>
+This model does not yield any covariates. This could happen because **age** variable directly depends on time and Cox model assumes that it is not. So we can remove this variable from our model.
+
+```{r echo=FALSE, comment=""}
+cox <- coxph(Surv(futime, fustat) ~ resid.ds + ecog.ps + rx, data = ova)
+summary(cox)
+```
+
+Now we can see that residual disease presence became significant hazard factor. However we need to check if it is not changing in time.
+
+To do that we can build Aalen model and visualize it:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment=""}
+aa_fit <- aareg(Surv(futime, fustat) ~ resid.ds + ecog.ps + rx, data = ova)
+autoplot(aa_fit)
+```
+
+On this chart we can see that **resid.ds2** changes over time and thus should be interpreted with caution.
+
+### Hazard ratio
+
+In order to characterize differences in survival rates numerically we can use hazard ratios (HRs).
+
+```{r message=FALSE, warning=FALSE}
+fit.coxph <- coxph(Surv(futime, fustat) ~ resid.ds + ecog.ps + rx, data = ova)
+ggforest(fit.coxph, data = ova)
+```
+
+Here we can see that **resid.ds2** HR significantly differ from 1. In fact, it is the same thing that we obtained [here](#COX2). HR for **resid.ds2** relatively to reference is 3.84. It means that **people with residual disease presence have 76.8% ($\frac{3.84}{1+3.85}$) higher chance of earlier status change (we do not really know what does *pustat* levels mean)**.
+
+# Conclusion
+
+Here we made a survival analysis of ovarian data set.
+
+We showed that:
+
++ Type 1 treated people below age of 57 have lower survival rates than people older than 57.
+
++ Residual disease presence might be significant hazard factor.
+
++ Survival rates among other groups and inside them do not significantly differ.
+
+
+
+
+
+
+
+
+
+
+
+
