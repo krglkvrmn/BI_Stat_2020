@@ -1,0 +1,734 @@
+---
+title: 'Project №3 "Mice"'
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+if (!require(readxl)) {install.packages("readxl")}
+if (!require(tidyverse)) {install.packages("tidyverse")}
+if (!require(car)) {install.packages("car")} 
+if (!require(multcomp)) {install.packages("multcomp")}
+if (!require(gridExtra)) {install.packages("gridExtra")}
+if (!require(vegan)) {install.packages("vegan")}
+if (!require(rgl)) {install.packages("rgl")}
+if (!require(stringr)) {install.packages("stringr")}
+if (!require("BiocManager")) {install.packages("BiocManager")}  
+if (!require(purrr)) {install.packages("purrr")}
+if (!require('limma')){BiocManager::install("limma")}
+if (!require('ggrepel')){install.packages("ggrepel")} 
+if (!require('latex2exp')){install.packages("latex2exp")}
+knitr::knit_hooks$set(webgl = hook_webgl)
+format.numbers <- function(num, deg = "4") {
+  return(sprintf(paste0("%.", deg, "g"), num))
+}
+```
+
+# Data preparation
+
+## Data set description
+<a id="dataset-description"></a>
+Data contains measurements of expression levels of 77 proteins of mice. There are 38 control mice and 34 mice with Down syndrome, for a total of 72 mice. 15 measurements were made for each mouse.
+
+There are 8 classes of mice, which depend on genotype, behavior and treatment.
+More detailed data set description and data itself can be found [here](https://archive.ics.uci.edu/ml/datasets/Mice+Protein+Expression#).
+
+## Data processing
+<a id="S1back"></a>
+The initial data has following structure described in [[S1]](#S1).
+
+```{r echo=FALSE, comment=""}
+mice_data <- read_xls("Data/Data_Cortex_Nuclear.xls")
+S1_dat <- mice_data
+```
+
+We can notice that MouseID variable is represented in very inconvenient way and does not satisfy tidy-data requirements (mouse id and measurement id are combined in one variable). We can split it into two different variables: *MouseID* and *MeasurID*.
+
+```{r echo=FALSE}
+splitted_ids <- transpose(str_split(mice_data$MouseID, "_"))
+mice_data$MouseID <- unlist(splitted_ids[[1]])
+mice_data$MeasurID <- as.integer(unlist(splitted_ids[[2]]))
+```
+
+We also have 4 variables that represent mice groups: *Genotype*, *Treatment*, *Behavior* and *class*. We need to convert them to factors. 
+
+```{r echo=FALSE}
+mice_data$Genotype <- factor(mice_data$Genotype)
+mice_data$Treatment <- factor(mice_data$Treatment)
+mice_data$Behavior <- factor(mice_data$Behavior)
+mice_data$class <- factor(mice_data$class)
+S2_dat <- mice_data
+```
+<a id="S2back"></a>
+Now data structure looks like [this. [S2]](#S2)
+
+## Data set correctness verification
+
+There are total of **`r length(unique(mice_data$MouseID))`** mice and **`r mean((group_by(mice_data, MouseID) %>% summarize(n = n()))$n)`** measurements for each mouse.
+
+They are divided in **`r length(levels(mice_data$class))`** groups.
+
+Every group has a number of mice according to table:
+
+```{r echo=FALSE}
+mice_data %>% group_by(class) %>% summarize(`# of mice` = n()/15)
+```
+
+Data seem to fit in description provided [earlier](#dataset-description), but there are only **`r nrow(na.omit(mice_data))`** rows without missing values, which is nearly half of whole data set.
+
+## Missing values
+
+Since we have too many missing values, we need to replace them. One of the possible ways is to replace it with zeros and another is to replace NA with mean values of groups.
+However there is **one important thing we should notice**. In our data NAs usually occur in **all** measurements of one mice for one or several proteins. It means that replacement
+it with mean values of the group is very risky, because **there are proteins of the particular mice for which we have no data at all**. In such way we can lose individual features of
+mice by using mean values of others, but replacement with zeros is definitely worse, so we will implement the first approach.
+
+```{r paged.print=TRUE, echo=FALSE} 
+mice_data <- mice_data %>% group_by(class) %>% mutate(across(-c("Treatment", "Behavior", "Genotype", "MeasurID"), function(x) ifelse(is.na(x), mean(x, na.rm = T), x)))
+```
+
+# Data analysis
+
+## Does mice class affect protein production?
+
+### One-way ANOVA
+
+In order to find out is there any differences in BDNF_N protein production between mice groups we will use one-way ANOVA.
+
+ANOVA on model *BDNF_N ~ class* yields following output:
+
+```{r echo=FALSE, include=FALSE} 
+model <- lm(BDNF_N ~ class, data = mice_data)
+model_anova <- Anova(model)
+as.data.frame(sapply(head(model_anova), format.numbers))
+```
+
+We can see that **production of BDNF_N protein significantly depends on mice class (F =`r format.numbers(model_anova[[3]][1])` , p_value = `r format.numbers(model_anova[[4]][1])`, df_1 = `r model_anova[[2]][1]`, df_2 = `r model_anova[[2]][2]`).**
+
+However we should ensure that our model satisfies usability conditions.
+
+### Model's usability conditions verification
+
+Here and further $3 \times mean(y)$ rule is used as a threshold for Cook distance.
+
+```{r echo=FALSE}
+mod_diag <- fortify(model)
+ggplot(mod_diag, aes(x=1:nrow(mod_diag), y = .cooksd)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(mice_data$BDNF_N)*3, color = "red") +
+  labs(x = "# of observation", y = "Cook distance") +  ggtitle("Cook distance plot") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+According to Cook distance plot, there are no critically influential observations.
+
+```{r echo=FALSE, message=FALSE}
+ggplot(data = mod_diag, aes(x = class, y = .stdresid)) +
+  geom_boxplot() + geom_hline(yintercept = 0)  +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  labs(x = "Class", y = "Resid. sd", title = "Residue distribution") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+We can not observe any patterns in residue distribution. However some values have offset of more than 2 sigma. Luckily our groups are well balanced and we have a lot of observations, so such deviations may not be critical.
+
+```{r echo=FALSE, }
+q <- qqPlot(model, distribution = "norm", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles", main = "Q-Q plot")
+```
+```{r echo=FALSE}
+norm_test <- shapiro.test(mod_diag$.resid)
+```
+
+According to Q-Q plot, distribution of model's residues seem to be more or less normal. However, Shapiro-Wilk normality test declines this hypothesis **(p-value = `r format.numbers(norm_test$p)`, W = `r format.numbers(norm_test$statistic)`)**. This might happen because of several outliers. 
+
+### Post-hoc test
+
+Post-hoc tests are designed for identification of particular groups with significant differences between them.
+
+```{r echo=FALSE, include=FALSE}
+post_hoc <- glht(model, linfct = mcp(class = "Tukey"))
+summary(post_hoc)
+```
+
+```{r echo=FALSE}
+class_data <- data.frame(class = factor(levels(mice_data$class)))
+class_data <- data.frame(class_data,
+  predict(model, newdata = class_data, interval = "confidence")
+)
+
+ggplot(data = class_data, aes(x = class, y = fit)) +
+  geom_point(aes(color = class)) +
+  geom_errorbar(aes(ymin = lwr, ymax = upr, color = class), width = 0.1) +
+  scale_color_manual(values = rev(c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"))) +
+  ggtitle("Tukey post-hoc test results") +
+  theme(legend.position = "none",
+        plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+
+```
+
+Post-hoc test showed that following groups significantly differ in BDNF_N production.
+<pre>
+     class          t-value   p-value
+c-SC-m - c-CS-m == 0  -8.955  < 0.001 ***
+c-SC-s - c-CS-m == 0  -4.663  < 0.001 ***
+t-CS-m - c-CS-m == 0  -4.782  < 0.001 ***
+t-CS-s - c-CS-m == 0  -5.683  < 0.001 ***
+t-SC-m - c-CS-m == 0  -3.278  0.02394 *  
+c-SC-m - c-CS-s == 0  -9.276  < 0.001 ***
+c-SC-s - c-CS-s == 0  -5.090  < 0.001 ***
+t-CS-m - c-CS-s == 0  -5.206  < 0.001 ***
+t-CS-s - c-CS-s == 0  -6.067  < 0.001 ***
+t-SC-m - c-CS-s == 0  -3.740  0.00468 ** 
+c-SC-s - c-SC-m == 0   4.053  0.00120 ** 
+t-CS-m - c-SC-m == 0   3.934  0.00223 ** 
+t-SC-m - c-SC-m == 0   5.438  < 0.001 ***
+t-SC-s - c-SC-m == 0   6.255  < 0.001 ***
+t-SC-s - t-CS-s == 0   3.313  0.02134 *  
+</pre>
+
+## Prediction of protein production
+
+### Building of linear model
+
+In our data we have lots of contiguous numeric variables which can be used to build linear model. In theory, such model may be useful in
+prediction of protein production.
+
+At first, we need to build linear model.
+<a id="S3back"></a>
+The first thing to do is to build full model without factors (because we only use protein data as predictors). Full model summary can be seen [here. [S3]](#S3)
+
+```{r echo=FALSE}
+full_mod_perfcolinearity <- lm(ERBB4_N ~ . -MouseID - MeasurID - class - Treatment - Genotype - Behavior, data = mice_data)
+S3_dat <- summary(full_mod_perfcolinearity)
+```
+
+This model has a lot of insignificant predictors and most importantly perfectly collinear predictor, which does not allow to calculate **variance inflation factor** (VIF).
+<a id="S4back"></a>
+Our next step is to remove perfectly collinear predictor **pS6_N**. Now we can calculate VIF for predictors of this model. [[S4]](#S4)
+
+```{r echo=FALSE}
+full_mod <- lm(ERBB4_N ~ . -MouseID - MeasurID - class - Treatment - Genotype - Behavior - pS6_N, data = mice_data)
+S4_dat <- vif(full_mod)
+```
+
+We see that all of our predictors is highly multicollinear. Indeed, that is what we should expect from such kind of data.
+Proteins in cells are organized in complex metabolic networks where concentration of particular protein depends on amount of others.
+This may be one the main reasons of high multicollinearity, which dramatically lowers model performance. However, we will
+try to select better model and see what we will get.
+
+To select the best model we will use automatic backward selection which is implemented in *step* function. Manual selection
+has many benefits, but we have too many variables and it may take too long to select the best model, so in our case
+automatic approach is probably the best choice.
+
+```{r include=FALSE, cache=TRUE}
+ideal_model <- step(full_mod, direction = "backward")
+S5_dat <- summary(ideal_model)
+```
+<a id="S56back"></a>
+Although obtained model has relatively high R^2 **(R^2 = `r format.numbers(summary(ideal_model)$adj.r.squared)`)** [[S5]](#S5) . VIF values still show high multicollinearity [[S6]](#S6). 
+
+```{r echo=FALSE}
+S6_dat <- vif(ideal_model)
+```
+<a id="S78back"></a>
+In the next model predictors were manually picked in such way, that there is no VIF greater than 2 [[S7](#S7), [S8](#S8)].
+
+```{r echo=FALSE}
+man_mod <- lm(ERBB4_N ~ pJNK_N + ELK_N + nNOS_N + Tau_N + IL1B_N, data = mice_data)
+S7_dat <- summary(man_mod)
+S8_dat <- vif(man_mod)
+```
+
+### Usability conditions verification
+
+One usability condition (no multicollinearity) is verified. Next we need to verify others.
+
+```{r echo=FALSE}
+mod_diag <- fortify(man_mod)
+ggplot(mod_diag, aes(x=1:nrow(mod_diag), y = .cooksd)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(mice_data$ERBB4_N)*3, color = "red") +
+  labs(x = "# of observation", y = "Cook distance") +  ggtitle("Cook distance plot") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+There are no influential observations in our data.
+<a id="resid_distrib"></a>
+```{r echo=FALSE, message=FALSE}
+ggplot(data = mod_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  labs(x = "Class", y = "Resid. sd", title = "Residue distribution") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+We cannot observe any patterns in residue distribution, but there are many residues that are more than 2 sigma away from fitted values.
+
+```{r echo=FALSE}
+q <- qqPlot(model, distribution = "norm", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles", main = "Q-Q plot")
+```
+```{r echo=FALSE}
+norm_test <- shapiro.test(mod_diag$.resid)
+```
+
+From Q-Q plot we can see that residue distribution slightly differs from normal and Shapiro-Wilk test proves it **(p-value = `r format.numbers(norm_test$p)`, W = `r format.numbers(norm_test$statistic)`)**. But since we have a lot of data, this may be not critical.
+
+Our model seem to almost fit into usability conditions. However it cannot be very useful due to low R^2 **(R^2 = `r format.numbers(summary(man_mod)$adj.r.squared)`)**.
+
+Summarizing this small research on models we can suggest that **protein expression data can not be used in building of reliable and precise linear model**.
+
+## Dimensionality reduction (PCA)
+
+### Ordination
+<a id="S910back"></a>
+PCA must be a good way to process our data. This will allow us to avoid multicollinearity. But first, we need to shrink our data, because we have 15 measurements of each mouse, but we want each observation to be a single mouse. So we can group our data by *MouseID* and summarize numerical variables by mean [[S9]](#S9). Then we will build PCA model on obtained data [[S10]](#S10).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+mice_shrinked <- mice_data %>% group_by(MouseID, class, Treatment, Behavior, Genotype) %>% summarise(across(-78, mean))
+mice_pca <- rda(mice_shrinked[, -c(1:5)], scale = TRUE)
+S9_dat <- mice_shrinked
+S10_dat <- head(summary(mice_pca))
+```
+
+### Interpretation of PCA
+
+In the results of PCA we can see that the first components explain very small proportion of variation. PC1, PC2 and PC3 explain total of **0.54929**. Each of them explains **0.2565, 0.1980 and 0.09483** respectively.
+
+```{r echo=FALSE, fig.height=10, fig.width=10}
+biplot(mice_pca, scaling = "species", display = "species", col = "#0072B2", main = "Correlation biplot (species)")
+```
+
+This chart shows us how each variable correlates with others and with 2 main components. It's hard to interpreter because of over 70 variables, but we can see strong correlations between a lot of variables and PC1.
+
+```{r echo=FALSE}
+cb_palete <- rev(c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"))
+pca_summary <- summary(mice_pca)
+pca_result <- as.data.frame(pca_summary$cont)
+plot_data <- as.data.frame(t(pca_result[c("Proportion Explained", "Cumulative Proportion"),]))
+plot_data$component <- rownames(plot_data)
+
+ggplot(plot_data[c(1:9),]) + 
+       geom_bar(aes(component, y = `Proportion Explained`), stat = "identity", alpha = 0.5, fill = cb_palete[3]) + 
+       geom_bar(aes(component, y = `Cumulative Proportion`), stat = "identity", alpha = 0.2, fill = cb_palete[6]) + 
+       scale_x_discrete(guide = guide_axis(angle=-45)) + theme_bw() +
+       labs(x = "Component", fill = "Legend", title = "Proportion explained by components") +
+       theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+            axis.title.y = element_text(size=14, vjust = 0.5),
+            axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+Here we can see proportion explained by each component (dark) and cumulative proportion (light). This is not so good, because we need at least 8 components to explain 80% data variation.
+
+```{r echo=FALSE}
+biplot(mice_pca, scaling = "sites", display = "sites", type = "points", main = "Biplot of individual sites", col = "#0072B2")
+```
+
+This chart depicts clusters of observations (sites). But this form is inconvenient, because does not show groups of mice. We can do this by colorizing such type of chart.
+
+```{r echo=FALSE, include=FALSE}
+df_scores <- data.frame(mice_shrinked, 
+                        scores(mice_pca, display = "sites", choices = c(1, 2, 3), scaling = "sites"))
+
+p_scores_class <- ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = class), alpha = 1) +
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) +
+  theme_bw() + scale_color_manual(values=cb_palete, name = "Mice class") + labs(x = "PC1", y = "PC2", title = "Observations colored by mice class") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.title = element_text(face="bold", size=12, hjust = 0.5))
+  
+p_scores_class
+```
+
+```{r echo=FALSE, include=FALSE}
+p_scores_treatment <- ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = Treatment), alpha = 1) +
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) +
+  theme_bw() + scale_color_manual(values=cb_palete[c(3, 2)], name = "Mice treatment") + labs(x = "PC1", y = "PC2", title = "Observations colored by treatment of mice") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.title = element_text(face="bold", size=12, hjust = 0.5))
+p_scores_treatment
+```
+
+```{r echo=FALSE, include=FALSE}
+p_scores_behavior <- ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = Behavior), alpha = 1) +
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) +
+  theme_bw() + scale_color_manual(values=cb_palete[c(5, 7)], name = "Mice behavior") + labs(x = "PC1", y = "PC2", title = "Observations colored by mice behavior") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.title = element_text(face="bold", size=12, hjust = 0.5))
+  
+p_scores_behavior
+```
+
+```{r echo=FALSE, include=FALSE}
+p_scores_genotype <- ggplot(df_scores, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = Genotype), alpha = 1) +
+  coord_equal(xlim = c(-1.2, 1.2), ylim = c(-1.2, 1.2)) +
+  theme_bw() + scale_color_manual(values=cb_palete[c(1, 3)], name = "Mice genotype") + labs(x = "PC1", y = "PC2", title = "Observations colored by mice genotype") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.title = element_text(face="bold", size=12, hjust = 0.5))
+  
+p_scores_genotype
+```
+<a id="PCA_charts"></a>
+```{r echo=FALSE, fig.height=11, fig.width=11}
+grid.arrange(p_scores_class, p_scores_behavior, p_scores_genotype, p_scores_treatment)
+```
+
+Looking at this chart we now can see dots that represent each mouse that participated in experiment. These mice can form clusters that represent degree of their similarity. We see that mice do not form clusters by class, treatment type and genotype. However there are 2 distinct clusters formed by control mice and mice that were stimulated to learn. Seems like they differ in production of various proteins.
+
+It is interesting which features affect principal components the most. Here is factor loads of proteins sorted by absolute value.
+
+```{r echo=FALSE}
+head(as.data.frame(scores(mice_pca, display = "species", choices = c(1, 2, 3), scaling = 0)) %>% arrange(desc(abs(PC1))), 3)
+head(as.data.frame(scores(mice_pca, display = "species", choices = c(1, 2, 3), scaling = 0)) %>% arrange(desc(abs(PC2))), 3)
+head(as.data.frame(scores(mice_pca, display = "species", choices = c(1, 2, 3), scaling = 0)) %>% arrange(desc(abs(PC3))), 3)
+```
+
+We see that:
+
+Proteins **CAMKII_N**, **MEK_N**, **pMEK_N** have high negative factor loads for PC1.
+
+Proteins **GSK3B_N**, **ITSN1_N** have high factor loads for PC2 and **SNCA_N** has high negative factor load.
+
+Proteins **pGSK3B_Tyr216_N**, **PSD95_N**, **CDK5_N** have high factor loads for PC3.
+
+2d chart may be not very informative in our case, because we have only **0.4545** of cumulative proportion explained by 2 components. Thus we can draw 3d plots to include more information.
+
+```{r webgl=TRUE, echo=FALSE, fig.height=10, fig.width=10}
+# I got weird graphics effects when I tried to create legend using rgl::legend3d function so I put link to previous charts below (for reference)
+par(mar=c(0,0,0,0))
+
+mycolors <- cb_palete
+df_scores$color <- mycolors[as.numeric(df_scores$class) ]
+
+plot3d( 
+  x=df_scores$PC1, df_scores$PC2, df_scores$PC3, 
+  col = df_scores$color,
+  type = "s",
+  radius = .05,
+  xlab="PC1", ylab="PC2", zlab="PC3", main = "Observations colored by mice class")
+```
+
+Points are colored in the same way as on [previous charts](#PCA_charts).
+
+```{r webgl=TRUE, echo=FALSE, fig.height=10, fig.width=10}
+par(mar=c(0,0,0,0))
+
+mycolors <- cb_palete[c(3, 2)]
+df_scores$color <- mycolors[as.numeric(df_scores$Treatment) ]
+
+plot3d( 
+  x=df_scores$PC1, df_scores$PC2, df_scores$PC3, 
+  col = df_scores$color,
+  type = "s",
+  radius = .05,
+  xlab="PC1", ylab="PC2", zlab="PC3", main = "Observations colored by treatment of mice")
+```
+
+```{r webgl=TRUE, echo=FALSE, fig.height=10, fig.width=10}
+par(mar=c(0,0,0,0))
+
+mycolors <- cb_palete[c(5, 7)]
+df_scores$color <- mycolors[as.numeric(df_scores$Behavior) ]
+
+plot3d( 
+  x=df_scores$PC1, df_scores$PC2, df_scores$PC3, 
+  col = df_scores$color,
+  type = "s",
+  radius = .05,
+  xlab="PC1", ylab="PC2", zlab="PC3", main = "Observations colored by mice behavior")
+```
+
+```{r webgl=TRUE, echo=FALSE, fig.height=10, fig.width=10}
+par(mar=c(0,0,0,0))
+
+mycolors <- cb_palete[c(1, 3)]
+df_scores$color <- mycolors[as.numeric(df_scores$Genotype) ]
+
+plot3d( 
+  x=df_scores$PC1, df_scores$PC2, df_scores$PC3, 
+  col = df_scores$color,
+  type = "s",
+  radius = .05,
+  xlab="PC1", ylab="PC2", zlab="PC3", main = "Observations colored by mice genotype")
+```
+
+## Building linear model (principal components as predictors)
+
+Now we performed dimension reduction with PCA and thus solved problem of multicollinearity.
+Now we can try to build linear model using principal components as predictors to predict *ERBB4_N* expression.
+<a id="S11back"></a>
+For that purpose we will use 20 principal components (cumulative proportion explained = **0.951083**). Detailed summary can be found in supplementary [[S11]](#S11). 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+mice_shrinked_linmod <- mice_data %>% group_by(MouseID, class, Treatment, Behavior, Genotype) %>% summarise(across(-78, mean))
+mice_pca_linmod <- rda(mice_shrinked_linmod[,-which(colnames(mice_shrinked_linmod) %in% c("MouseID", "class", "Treatment", "Behavior", "Genotype", "ERBB4_N"))], scale = TRUE)
+head(summary(mice_pca_linmod))
+
+pca_linmod_dat <- data.frame(mice_shrinked_linmod, scores(mice_pca, display = "sites", choices = c(1:20), scaling = "sites"))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+man_mod <- lm(ERBB4_N ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20, data = pca_linmod_dat)
+S11_dat <- summary(man_mod)
+```
+
+```{r echo=FALSE, comment=""}
+vif(man_mod)
+```
+
+We can see that all VIFs are equal 1, that happened because of PCA. Our model have several insignificant predictors, but we will keep them.
+
+### Usability conditions verification
+
+```{r echo=FALSE, fig.width=10, fig.height=10}
+mod_diag <- fortify(man_mod)
+ggplot(mod_diag, aes(x=1:nrow(mod_diag), y = .cooksd)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(pca_linmod_dat$ERBB4_N)*3, color = "red") +
+  labs(x = "# of observation", y = "Cook distance") +  ggtitle("Cook distance plot") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+There are no influential observations in our data.
+
+```{r echo=FALSE, message=FALSE}
+ggplot(data = mod_diag, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red") +
+  labs(x = "Class", y = "Resid. sd", title = "Residue distribution") +
+  theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5))
+```
+
+We cannot observe any patterns in residue distribution and there is less highly deviating observations than in [previous attempt](#resid_distrib).
+
+```{r echo=FALSE, tidy=TRUE}
+q <- qqPlot(model, distribution = "norm", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles", main = "Q-Q plot")
+```
+```{r echo=FALSE}
+norm_test <- shapiro.test(mod_diag$.resid)
+```
+
+Now residue distribution became normal **(p-value = `r format.numbers(norm_test$p)`, W = `r format.numbers(norm_test$statistic)`)**.
+
+Model (which is built using PC predictors) satisfies usability conditions and has greater r-squared **(R^2 = `r format.numbers(summary(man_mod)$adj.r.squared)`)**.
+
+In theory, this model could help us to predict protein expression using data about other proteins. However it might be hard to interpret slope coefficients as well as
+impact of individual proteins. At least we know that PCA could help us fight multicollinearity.
+
+## Protein expression analysis
+
+Analysis of differential protein expression can be easily conducted with [limma package](https://www.rdocumentation.org/packages/limma/versions/3.28.14).
+
+At first, we need to prepare our data. Rows must represent features (in our case features are protein names) and columns must represent observations (mice).
+
+For that purpose we will transpose shrinked data obtained earlier. Also we need to create model matrix of different groups (*Behavior*, *Treatment*, *Genotype*).
+Then this matrix and our transposed data are passed to *lmFit* function that fits linear model for each gene. Resulting model is passed to *eBayes* function which computes t-statistic. Then top N differentially expressed proteins are extracted with *topTable* function. This function also allows us to set p-value adjustment method. Here we use conservative **bonferroni** adjustment in order to avoid I type errors. 
+
+After performing steps described above we got lists of differentially expressed proteins for each of groups.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mice_feature_rows <- data.frame(t(mice_shrinked[,-c(1:5)]))
+mm_behavior <- model.matrix(~ mice_shrinked$Behavior)
+mm_genotype <- model.matrix(~ mice_shrinked$Genotype)
+mm_treatnent <- model.matrix(~ mice_shrinked$Treatment)
+
+behavior_fit <- eBayes(lmFit(mice_feature_rows, mm_behavior))
+genotype_fit <- eBayes(lmFit(mice_feature_rows, mm_genotype))
+treatment_fit <- eBayes(lmFit(mice_feature_rows, mm_treatnent))
+
+diffexp_genes_behavior <- topTable(behavior_fit, n = 77, adjust.method = "bonferroni")       # Default output is 10 genes, we have 77
+diffexp_genes_genotype <- topTable(genotype_fit, n = 77, adjust.method = "bonferroni")
+diffexp_genes_treatment <- topTable(treatment_fit, n = 77, adjust.method = "bonferroni")
+
+signif_de_genes_behavior <- filter(diffexp_genes_behavior, adj.P.Val <= 0.05)
+signif_de_genes_genotype <- filter(diffexp_genes_genotype, adj.P.Val <= 0.05)
+signif_de_genes_treatment <- filter(diffexp_genes_treatment, adj.P.Val <= 0.05)
+```
+
+**Differentially expressed proteins for *Behavior* group:**
+
+```{r echo=FALSE}
+data.frame(sapply(signif_de_genes_behavior, format.numbers, deg = "2"), row.names = rownames(signif_de_genes_behavior))
+```
+
+**Differentially expressed proteins for *Genotype* group:**
+
+```{r echo=FALSE}
+data.frame(t(apply(signif_de_genes_genotype, 2, format.numbers, deg = "2")), row.names = rownames(signif_de_genes_genotype))
+```
+
+**There is no differentially expressed proteins in *Treatment* group**
+
+Data about all proteins in all groups can be found in supplementary materials:
+<a id="S121314back"></a>
+
+  + [[S12]](#S12) - Behavior
+  
+  + [[S13]](#S13) - Treatment
+  
+  + [[S14]](#S14) - Genotype
+
+We see that there are a lot of differentially expressed proteins between *Behavior* groups, unlike the others. This means that drug treatment and mice genotype do not affect protein expression, but learning does. This also proves clusterization that we showed using PCA: mice that were stimulated to learn and control ones form two distinct groups.
+
+Such protein expression data can be visualized with volcano plot:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+dif_exp <- function(data) {
+  significance <- ifelse(data$adj.P.Val <= 0.05, "Significantly", "Non-significantly")
+  regulation <- ifelse(data$logFC < 0, "downregulated", "upregulated")
+  return(paste(significance, regulation))
+}
+volcano_data_b <- diffexp_genes_behavior
+volcano_data_b$diffexpressed <- dif_exp(volcano_data_b)
+volcano_data_b$labels <- rownames(volcano_data_b)
+S12_dat <- volcano_data_b
+
+volcano_data_t <- diffexp_genes_treatment
+volcano_data_t$diffexpressed <- dif_exp(volcano_data_t)
+volcano_data_t$labels <- rownames(volcano_data_t)
+S13_dat <- volcano_data_t
+
+volcano_data_g <- diffexp_genes_genotype
+volcano_data_g$diffexpressed <- dif_exp(volcano_data_g)
+volcano_data_g$labels <- rownames(volcano_data_g)
+S14_dat <- volcano_data_g
+```
+
+```{r echo=FALSE, fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+ggplot(data=volcano_data_b, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label = labels)) +
+        geom_point() + 
+        theme_bw() +
+        geom_text_repel() +
+        scale_color_manual(values=cb_palete[c(3:6)], name = "") +
+        geom_vline(xintercept=0, col="gray") +
+        geom_hline(yintercept=-log10(0.05), col="gray") +
+        xlim(-1.5, 1.5) + labs(x = "logFC", y = TeX("log_{10}(adj.p-value)"), title = "Differentially expressed proteins in Behavior group") +
+        theme(plot.title = element_text(face="bold", size=16, hjust = 0.5),
+        axis.title.y = element_text(size=14, vjust = 0.5),
+        axis.title.x = element_text(size=14, vjust = 0.5),
+        legend.text = element_text(size=12))
+```
+
+Here we can see that there are more upregulated proteins than downregulated. However downregulated proteins in general have larger absolute fold change. Nevertheless almost all FC are relatively small, which might indicate minor changes in mice phenotype.
+
+# Supplementary materials
+<a id="S1"></a>
+**S1. Initial structure of the data**. [Jump back](#S1back)
+```{r S1, comment="", echo=FALSE}
+str(S1_dat)
+```
+
+<a id="S2"></a>
+**S2. Data structure after making data "tidy"**. [Jump back](#S2back)
+```{r S2, comment="", echo=FALSE}
+str(S2_dat)
+```
+
+<a id="S3"></a>
+**S3. Full linear model summary**. [Jump back](#S3back)
+```{r S3, comment="", echo=FALSE}
+S3_dat
+```
+
+<a id="S4"></a>
+**S4. Variance inflation factors of predictors after removal of pS6_N**. [Jump back](#S4back)
+```{r S4, comment="", echo=FALSE}
+S4_dat
+```
+
+<a id="S5"></a>
+**S5. Summary of model selected via backward selection **. [Jump back](#S56back)
+```{r S5, comment="", echo=FALSE}
+S5_dat
+```
+
+<a id="S6"></a>
+**S6. VIFs of model selected via backward selection **. [Jump back](#S56back)
+```{r S6, comment="", echo=FALSE}
+S6_dat
+```
+
+<a id="S7"></a>
+**S7. Summary of manually selected model**. [Jump back](#S78back)
+```{r S7, comment="", echo=FALSE}
+S7_dat
+```
+
+<a id="S8"></a>
+**S8. VIFs of manually selected model**. [Jump back](#S78back)
+```{r S8, comment="", echo=FALSE}
+S8_dat
+```
+
+<a id="S9"></a>
+**S9. Data containing average (of 15 measurements) protein production for each mouse**. [Jump back](#S910back)
+```{r S9, comment="", echo=FALSE}
+S9_dat
+```
+
+<a id="S10"></a>
+**S10. PCA summary**. [Jump back](#S910back)
+```{r S10, comment="", echo=FALSE}
+S10_dat
+```
+
+<a id="S11"></a>
+**S11. Linear model summary (PC as predictors)**. [Jump back](#S11back)
+```{r S11, comment="", echo=FALSE}
+S11_dat
+```
+
+<a id="S12"></a>
+**S12. Differential protein expression data for *Behavior* group**. [Jump back](#S121314back)
+```{r S12, comment="", echo=FALSE}
+S12_dat
+```
+
+<a id="S13"></a>
+**S13. Differential protein expression data for *Treatment* group**. [Jump back](#S121314back)
+```{r S13, comment="", echo=FALSE}
+S13_dat
+```
+
+<a id="S14"></a>
+**S14. Differential protein expression data for *Genotype* group**. [Jump back](#S121314back)
+```{r S14, comment="", echo=FALSE}
+S14_dat
+```
